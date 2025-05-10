@@ -1,0 +1,132 @@
+// Apex Trigger and Handler (single file)
+// This code marks Opportunities with Amount > 100,000 as high-value 
+// and logs each action in Opportunity_Log__c. It is bulk-safe and test-covered.
+
+trigger OpportunityTrigger on Opportunity (
+    before insert, before update, 
+    after insert, after update
+) {
+    if (Trigger.isBefore) {
+        if (Trigger.isInsert) {
+            OpportunityTriggerHandler.beforeInsert(Trigger.new);
+        }
+        if (Trigger.isUpdate) {
+            OpportunityTriggerHandler.beforeUpdate(Trigger.new, Trigger.oldMap);
+        }
+    }
+    if (Trigger.isAfter) {
+        if (Trigger.isInsert) {
+            OpportunityTriggerHandler.afterInsert(Trigger.new);
+        }
+        if (Trigger.isUpdate) {
+            OpportunityTriggerHandler.afterUpdate(Trigger.new, Trigger.oldMap);
+        }
+    }
+}
+
+public class OpportunityTriggerHandler {
+    // Before insert: set High_Value__c based on Amount
+    public static void beforeInsert(List<Opportunity> newOpps) {
+        for (Opportunity opp : newOpps) {
+            if (opp.Amount != null && opp.Amount > 100000) {
+                opp.High_Value__c = true;
+            } else {
+                opp.High_Value__c = false;
+            }
+        }
+    }
+    // Before update: set High_Value__c based on Amount
+    public static void beforeUpdate(List<Opportunity> newOpps, Map<Id, Opportunity> oldMap) {
+        for (Opportunity opp : newOpps) {
+            if (opp.Amount != null && opp.Amount > 100000) {
+                opp.High_Value__c = true;
+            } else {
+                opp.High_Value__c = false;
+            }
+        }
+    }
+    // After insert: log if newly high-value
+    public static void afterInsert(List<Opportunity> newOpps) {
+        List<Opportunity_Log__c> logs = new List<Opportunity_Log__c>();
+        for (Opportunity opp : newOpps) {
+            if (opp.High_Value__c) {
+                logs.add(new Opportunity_Log__c(
+                    Opportunity__c = opp.Id,
+                    Action__c      = 'Marked High Value'
+                ));
+            }
+        }
+        if (!logs.isEmpty()) {
+            insert logs;
+        }
+    }
+    // After update: log if transitioned to high-value
+    public static void afterUpdate(List<Opportunity> newOpps, Map<Id, Opportunity> oldMap) {
+        List<Opportunity_Log__c> logs = new List<Opportunity_Log__c>();
+        for (Opportunity opp : newOpps) {
+            Boolean wasHigh = oldMap.get(opp.Id).High_Value__c;
+            if (opp.High_Value__c && !wasHigh) {
+                logs.add(new Opportunity_Log__c(
+                    Opportunity__c = opp.Id,
+                    Action__c      = 'Marked High Value'
+                ));
+            }
+        }
+        if (!logs.isEmpty()) {
+            insert logs;
+        }
+    }
+}
+
+// Test class for the trigger
+@isTest
+private class OpportunityTriggerTest {
+    static testMethod void testHighValueFlagAndLogging() {
+        // Create two opportunities: one above threshold, one below
+        Opportunity opp1 = new Opportunity(
+            Name='Big Deal', StageName='Prospecting', 
+            CloseDate=Date.today().addDays(30), Amount=150000
+        );
+        Opportunity opp2 = new Opportunity(
+            Name='Small Deal', StageName='Prospecting', 
+            CloseDate=Date.today().addDays(30), Amount=50000
+        );
+        List<Opportunity> oppList = new List<Opportunity>{opp1, opp2};
+
+        Test.startTest();
+            insert oppList;
+        Test.stopTest();
+
+        // After insert: opp1 should be high-value, opp2 not
+        opp1 = [SELECT High_Value__c FROM Opportunity WHERE Id = :opp1.Id];
+        opp2 = [SELECT High_Value__c FROM Opportunity WHERE Id = :opp2.Id];
+        System.assert(opp1.High_Value__c, 'Opp1 should be flagged High Value');
+        System.assert(!opp2.High_Value__c, 'Opp2 should not be flagged');
+
+        // Verify log created only for opp1
+        List<Opportunity_Log__c> logs = [SELECT Opportunity__c, Action__c 
+                                        FROM Opportunity_Log__c 
+                                        WHERE Opportunity__c = :opp1.Id];
+        System.assertEquals(1, logs.size(), 'One log entry should be created for opp1');
+        System.assertEquals('Marked High Value', logs[0].Action__c);
+
+        // Update amounts: opp1 remains high, opp2 crosses threshold
+        opp1.Amount = 200000;
+        opp2.Amount = 120000;
+        Test.startTest();
+            update new List<Opportunity>{opp1, opp2};
+        Test.stopTest();
+
+        // After update: both should be flagged
+        opp1 = [SELECT High_Value__c FROM Opportunity WHERE Id = :opp1.Id];
+        opp2 = [SELECT High_Value__c FROM Opportunity WHERE Id = :opp2.Id];
+        System.assert(opp1.High_Value__c);
+        System.assert(opp2.High_Value__c);
+
+        // Verify a new log created for opp2 only (opp1 was already high-value)
+        logs = [SELECT Opportunity__c, Action__c 
+                FROM Opportunity_Log__c 
+                WHERE Opportunity__c = :opp2.Id];
+        System.assertEquals(1, logs.size(), 'One log entry should be created for opp2 on update');
+    }
+}
